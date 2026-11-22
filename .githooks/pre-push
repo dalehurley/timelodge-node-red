@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_ref" = '(delete)' ] && continue
+    python3 - "$local_sha" <<'PY'
+import pathlib
+import subprocess
+import sys
+import tempfile
+
+with tempfile.TemporaryDirectory(prefix="timelodge-node-red-check-") as temporary:
+    source = pathlib.Path(temporary)
+    archive = source / "snapshot.tar"
+    subprocess.run(["git", "archive", "--output", archive, sys.argv[1]], check=True)
+    subprocess.run(["tar", "-xf", archive, "-C", source], check=True)
+    subprocess.run(["node", "--test"], cwd=source, check=True, stdin=subprocess.DEVNULL)
+PY
+done

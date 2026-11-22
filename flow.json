@@ -1,0 +1,224 @@
+[
+  {
+    "id": "6da3abcc68f18201",
+    "type": "tab",
+    "label": "TimeLodge Day Summary",
+    "disabled": false,
+    "info": "Summarise the recorded and billable time in your TimeLodge workspace for one entry date. Configure TIMELODGE_AUTHORIZATION in the Node-RED process environment and edit the example date before clicking Inject."
+  },
+  {
+    "id": "6da3abcc68f18202",
+    "type": "comment",
+    "z": "6da3abcc68f18201",
+    "name": "TimeLodge Day Summary v0.1.0",
+    "info": "Configure a TimeLodge workspace token scoped to time:read in the Node-RED process environment. Set TIMELODGE_AUTHORIZATION to Bearer followed by the token, then restart Node-RED if needed. Replace the example date in Select entry date, deploy and click Inject. The summary is available as msg.payload with entryDate, entryCount, recordedSeconds and billableSeconds.",
+    "x": 220,
+    "y": 80,
+    "wires": []
+  },
+  {
+    "id": "6da3abcc68f18203",
+    "type": "inject",
+    "z": "6da3abcc68f18201",
+    "name": "Select entry date",
+    "props": [
+      {
+        "p": "payload"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": false,
+    "onceDelay": 0.1,
+    "topic": "",
+    "payload": "2026-11-18",
+    "payloadType": "str",
+    "x": 190,
+    "y": 160,
+    "wires": [
+      [
+        "6da3abcc68f18204"
+      ]
+    ]
+  },
+  {
+    "id": "6da3abcc68f18204",
+    "type": "function",
+    "z": "6da3abcc68f18201",
+    "name": "Validate entry date",
+    "func": "const value = msg.payload;\nconst date = typeof value === 'string' ? value.trim() : '';\nconst parsed = new Date(date);\nif (!/^[1-9]\\d{3}-\\d{2}-\\d{2}$/.test(date) ||\n    Number.isNaN(parsed.getTime()) ||\n    parsed.toISOString().slice(0, 10) !== date) {\n    return [null, { payload: { error: 'Choose a valid entry date in YYYY-MM-DD format.' } }];\n}\nreturn [{ report: { date, page: 1, total: null, seen: [], recorded: 0, billable: 0 } }, null];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 410,
+    "y": 160,
+    "wires": [
+      [
+        "6da3abcc68f18205"
+      ],
+      [
+        "6da3abcc68f18209"
+      ]
+    ]
+  },
+  {
+    "id": "6da3abcc68f18205",
+    "type": "function",
+    "z": "6da3abcc68f18201",
+    "name": "Prepare scoped request",
+    "func": "const authorization = env.get('TIMELODGE_AUTHORIZATION');\nif (typeof authorization !== 'string' || !/^Bearer [\\x21-\\x7e]+$/.test(authorization)) {\n    return [null, { payload: { error: 'Set TIMELODGE_AUTHORIZATION to Bearer followed by your time:read token.' } }];\n}\nconst report = msg.report;\nreturn [{\n    report,\n    url: 'https://timelodge.com/api/v1/time-entries?entry_date=' + report.date + '&page=' + report.page + '&per_page=100',\n    followRedirects: false,\n    requestTimeout: 10000\n}, null];",
+    "outputs": 2,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 660,
+    "y": 160,
+    "wires": [
+      [
+        "6da3abcc68f18206"
+      ],
+      [
+        "6da3abcc68f18209"
+      ]
+    ]
+  },
+  {
+    "id": "6da3abcc68f18206",
+    "type": "http request",
+    "z": "6da3abcc68f18201",
+    "name": "Read TimeLodge entries",
+    "method": "GET",
+    "ret": "obj",
+    "paytoqs": "ignore",
+    "url": "",
+    "tls": "",
+    "persist": false,
+    "proxy": "",
+    "insecureHTTPParser": false,
+    "authType": "",
+    "senderr": false,
+    "headers": [
+      {
+        "keyType": "other",
+        "keyValue": "Accept",
+        "valueType": "other",
+        "valueValue": "application/json"
+      },
+      {
+        "keyType": "other",
+        "keyValue": "Authorization",
+        "valueType": "other",
+        "valueValue": "${TIMELODGE_AUTHORIZATION}"
+      }
+    ],
+    "x": 920,
+    "y": 160,
+    "wires": [
+      [
+        "6da3abcc68f18207"
+      ]
+    ]
+  },
+  {
+    "id": "6da3abcc68f18207",
+    "type": "function",
+    "z": "6da3abcc68f18201",
+    "name": "Add durations and paginate",
+    "func": "function failure(error, extra = {}) {\n    return [null, null, { payload: { error, ...extra } }];\n}\n\nconst status = msg.statusCode;\nif (status === 401 || status === 403) {\n    return failure('TimeLodge denied access. Confirm the workspace has API access and the token has time:read.');\n}\nif (status === 429) {\n    const retryAfter = String(msg.headers?.['retry-after'] ?? '');\n    const delay = /^\\d{1,5}$/.test(retryAfter) ? { retryAfterSeconds: Number(retryAfter) } : {};\n    return failure('TimeLodge rate limit reached. Retry the summary later.', delay);\n}\nif (status !== 200) {\n    return failure('TimeLodge could not return time entries. Check access and try again.');\n}\n\nconst { data, meta } = msg.payload ?? {};\nconst report = msg.report;\nconst limit = 100;\nif (!Array.isArray(data) ||\n    meta?.current_page !== report.page ||\n    meta.per_page !== limit ||\n    !Number.isSafeInteger(meta.total) ||\n    meta.total < 0 ||\n    meta.last_page !== Math.max(1, Math.ceil(meta.total / limit)) ||\n    meta.last_page < report.page ||\n    data.length !== Math.min(limit, Math.max(0, meta.total - (report.page - 1) * limit)) ||\n    (report.total !== null && meta.total !== report.total)) {\n    return failure('TimeLodge returned inconsistent pagination. Retry when entries have stopped changing.');\n}\nif (meta.last_page > 100) {\n    return failure('This flow can summarise up to 10,000 entries for one date.');\n}\nreport.total = meta.total;\nconst seen = new Set(report.seen);\nfor (const entry of data) {\n    if (typeof entry?.id !== 'string' ||\n        entry.id === '' ||\n        seen.has(entry.id) ||\n        !Number.isSafeInteger(entry.duration_seconds) ||\n        entry.duration_seconds < 0 ||\n        typeof entry.billable !== 'boolean') {\n        return failure('TimeLodge returned an invalid or duplicate entry. Retry the summary.');\n    }\n    seen.add(entry.id);\n    report.recorded += entry.duration_seconds;\n    if (entry.billable) {\n        report.billable += entry.duration_seconds;\n    }\n}\nif (!Number.isSafeInteger(report.recorded)) {\n    return failure('The total time exceeds the range this flow can summarise.');\n}\nif (report.page < meta.last_page) {\n    return [{ report: { ...report, page: report.page + 1, seen: [...seen] } }, null, null];\n}\nreturn [null, {\n    payload: {\n        entryDate: report.date,\n        entryCount: seen.size,\n        recordedSeconds: report.recorded,\n        billableSeconds: report.billable\n    }\n}, null];",
+    "outputs": 3,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1170,
+    "y": 160,
+    "wires": [
+      [
+        "6da3abcc68f18205"
+      ],
+      [
+        "6da3abcc68f18208"
+      ],
+      [
+        "6da3abcc68f18209"
+      ]
+    ]
+  },
+  {
+    "id": "6da3abcc68f18208",
+    "type": "debug",
+    "z": "6da3abcc68f18201",
+    "name": "TimeLodge daily total",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1420,
+    "y": 160,
+    "wires": []
+  },
+  {
+    "id": "6da3abcc68f18209",
+    "type": "debug",
+    "z": "6da3abcc68f18201",
+    "name": "TimeLodge summary error",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 1420,
+    "y": 290,
+    "wires": []
+  },
+  {
+    "id": "6da3abcc68f1820a",
+    "type": "catch",
+    "z": "6da3abcc68f18201",
+    "name": "Catch request errors",
+    "scope": [
+      "6da3abcc68f18206"
+    ],
+    "uncaught": false,
+    "x": 820,
+    "y": 290,
+    "wires": [
+      [
+        "6da3abcc68f1820b"
+      ]
+    ]
+  },
+  {
+    "id": "6da3abcc68f1820b",
+    "type": "function",
+    "z": "6da3abcc68f18201",
+    "name": "Report request error",
+    "func": "return { payload: { error: 'The TimeLodge request failed. Check the Node-RED connection and try again.' } };",
+    "outputs": 1,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 1090,
+    "y": 290,
+    "wires": [
+      [
+        "6da3abcc68f18209"
+      ]
+    ]
+  }
+]
